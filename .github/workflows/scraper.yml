@@ -1,0 +1,29 @@
+name: IPO Subscription Scraper
+
+on:
+  schedule:
+    # Every 5 mins, Mon-Fri, 4:30 AM - 12:00 PM UTC (10:00 AM - 5:30 PM IST)
+    - cron: '*/5 4-12 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Run scraper
+        env:
+          FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
+          FIRESTORE_PROJECT_ID: ${{ secrets.FIRESTORE_PROJECT_ID }}
+        run: python src/main.py
