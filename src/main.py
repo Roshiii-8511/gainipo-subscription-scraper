@@ -1,4 +1,4 @@
-"""Main orchestrator for IPO subscription scraper - FIXED VERSION"""
+"""Main orchestrator for IPO subscription scraper - FIXED & DEBUGGED"""
 import time
 import random
 import logging
@@ -40,7 +40,7 @@ def get_session():
   """Create HTTP session with retries."""
   session = requests.Session()
   session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
   })
   return session
 
@@ -59,7 +59,7 @@ def parse_number(text):
       return 0
 
 def fetch_bse_ipos():
-  """Fetch live IPOs from BSE - FIXED VERSION."""
+  """Fetch live IPOs from BSE - DEBUGGED VERSION."""
   try:
     session = get_session()
     url = "https://www.bseindia.com/publicissue.html"
@@ -68,11 +68,18 @@ def fetch_bse_ipos():
     
     ipos = []
     
+    # Find all tables
+    tables = soup.find_all('table')
+    logger.info(f"Found {len(tables)} tables on page")
+    
     # Find the table containing "Security Name" header
     table = None
-    for tbl in soup.find_all('table'):
+    for idx, tbl in enumerate(tables):
       headers = tbl.find_all('th')
-      if headers and any('Security Name' in str(h) for h in headers):
+      header_text = ' '.join([str(h.get_text(strip=True)) for h in headers])
+      if 'Security Name' in header_text:
+        logger.info(f"Found target table at index {idx}")
+        logger.info(f"Headers: {header_text[:100]}...")
         table = tbl
         break
     
@@ -81,47 +88,71 @@ def fetch_bse_ipos():
       return ipos
     
     rows = table.find_all('tr')[1:]  # Skip header row
-    logger.info(f"Found {len(rows)} rows in BSE table")
+    logger.info(f"Found {len(rows)} data rows in table")
     
-    for row in rows:
+    for row_idx, row in enumerate(rows[:5]):
       try:
         cols = row.find_all('td')
-        if len(cols) < 8:  # Need at least 8 columns
+        if len(cols) == 0:
           continue
         
-        # Extract data from columns
-        security_link = cols[0].find('a')
-        security_name = cols[0].get_text(strip=True) if security_link is None else security_link.get_text(strip=True)
-        exchange_platform = cols[1].get_text(strip=True)
-        start_date = cols[2].get_text(strip=True)
-        end_date = cols[3].get_text(strip=True)
-        issue_status = cols[7].get_text(strip=True)
+        logger.info(f"\n--- ROW {row_idx} ---")
+        logger.info(f"Total columns: {len(cols)}")
         
-        # CRITICAL: Only get IPOs with "Live" status
-        if issue_status.upper() == "LIVE":
-          # Extract IPO ID from the link
-          ipo_id = None
-          if security_link and 'href' in security_link.attrs:
-            href = security_link['href']
-            # Extract ID from: DisplayIPO.aspx?id=4356&type=IPO...
-            if 'id=' in href:
-              ipo_id = href.split('id=')[1].split('&')[0]
+        # Log all column values
+        for col_idx, col in enumerate(cols):
+          col_text = col.get_text(strip=True)[:50]
+          logger.info(f"Col[{col_idx}]: {col_text}")
+        
+        # Now try to extract with different column indices
+        if len(cols) >= 8:
+          security_name = cols[0].get_text(strip=True)
+          exchange_platform = cols[1].get_text(strip=True)
+          issue_status_col7 = cols[7].get_text(strip=True)
           
-          logger.info(f"Found LIVE IPO: {security_name} ({exchange_platform}) - ID: {ipo_id}")
+          logger.info(f"Security: {security_name}")
+          logger.info(f"Platform: {exchange_platform}")
+          logger.info(f"Status[7]: {issue_status_col7}")
           
-          ipos.append({
-            'security_name': security_name,
-            'exchange_platform': exchange_platform,
-            'ipo_id': ipo_id,
-            'status': issue_status,
-            'start_date': start_date,
-            'end_date': end_date
-          })
+          # Check last column too
+          last_col = cols[-1].get_text(strip=True)
+          logger.info(f"Last Col: {last_col}")
+          
+          # Try to find "Live" in any column
+          live_found = False
+          live_col_idx = -1
+          for c_idx, col in enumerate(cols):
+            if 'Live' in col.get_text(strip=True) or 'Forthcoming' in col.get_text(strip=True):
+              live_found = True
+              live_col_idx = c_idx
+              logger.info(f"Status column is actually at index {c_idx}: {col.get_text(strip=True)}")
+              break
+          
+          if live_found and "Live" in cols[live_col_idx].get_text(strip=True):
+            logger.info(f"✓ FOUND LIVE IPO: {security_name}")
+            # Extract IPO ID from the link
+            ipo_id = None
+            security_link = cols[0].find('a')
+            if security_link and 'href' in security_link.attrs:
+              href = security_link['href']
+              if 'id=' in href:
+                ipo_id = href.split('id=')[1].split('&')[0]
+            
+            ipos.append({
+              'security_name': security_name,
+              'exchange_platform': exchange_platform,
+              'ipo_id': ipo_id,
+              'status': 'Live',
+              'start_date': cols[2].get_text(strip=True) if len(cols) > 2 else '',
+              'end_date': cols[3].get_text(strip=True) if len(cols) > 3 else ''
+            })
       except Exception as e:
-        logger.debug(f"Error parsing row: {e}")
+        logger.error(f"Error parsing row {row_idx}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         continue
     
-    logger.info(f"Total LIVE IPOs found: {len(ipos)}")
+    logger.info(f"\n\nTotal LIVE IPOs found: {len(ipos)}")
     return ipos
     
   except Exception as e:
@@ -140,7 +171,7 @@ def scrape_bse_subscription(ipo_data):
     
     session = get_session()
     url = f"https://www.bseindia.com/markets/publicIssues/CummDemandSchedule.aspx?ID={ipo_id}&status=L"
-    logger.info(f"Fetching subscription data from: {url}")
+    logger.info(f"Fetching: {url}")
     response = session.get(url, timeout=30)
     soup = BeautifulSoup(response.text, 'html.parser')
     
@@ -180,7 +211,6 @@ def scrape_bse_subscription(ipo_data):
     if not categories:
       return None
     
-    # Calculate totals
     total_offered = sum(c['offered'] for c in categories.values())
     total_bid = sum(c['bid'] for c in categories.values())
     total_subscription = round(total_bid / total_offered, 2) if total_offered > 0 else 0
@@ -194,11 +224,10 @@ def scrape_bse_subscription(ipo_data):
       'total': {'offered': total_offered, 'bid': total_bid, 'subscription': total_subscription},
       'source': 'BSE'
     }
-    
     return result
     
   except Exception as e:
-    logger.error(f"Error scraping BSE subscription: {e}")
+    logger.error(f"Error scraping: {e}")
     import traceback
     logger.error(traceback.format_exc())
     return None
@@ -218,33 +247,27 @@ def save_to_firestore(data):
     return True
     
   except Exception as e:
-    logger.error(f"Error saving to Firestore: {e}")
+    logger.error(f"Error saving: {e}")
     return False
 
 def run_scraper():
   """Main scraper execution."""
   logger.info("=" * 50)
-  logger.info("Starting IPO Subscription Scraper - FIXED VERSION")
+  logger.info("Starting IPO Subscription Scraper - DEBUGGED")
   logger.info("=" * 50)
   
-  # Fetch live IPOs
   ipos = fetch_bse_ipos()
   if not ipos:
     logger.warning("No live IPOs found")
     return
   
-  # Scrape each IPO
   success_count = 0
   for ipo in ipos:
     logger.info(f"Processing: {ipo['security_name']}")
-    
-    # Add random delay
     time.sleep(random.uniform(1, 3))
     
-    # Scrape subscription data
     data = scrape_bse_subscription(ipo)
     if data:
-      # Save to Firestore
       if save_to_firestore(data):
         success_count += 1
         logger.info(f"✓ {ipo['security_name']}")
@@ -254,7 +277,7 @@ def run_scraper():
       logger.warning(f"✗ No data for {ipo['security_name']}")
   
   logger.info("=" * 50)
-  logger.info(f"Scraper completed. Success: {success_count}/{len(ipos)}")
+  logger.info(f"Success: {success_count}/{len(ipos)}")
   logger.info("=" * 50)
 
 if __name__ == "__main__":
