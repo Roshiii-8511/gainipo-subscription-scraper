@@ -1,14 +1,19 @@
-"""Main orchestrator for IPO subscription scraper - FIXED & DEBUGGED"""
+"""Main orchestrator for IPO subscription scraper - SELENIUM VERSION"""
 import time
 import random
 import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
-import requests
 from bs4 import BeautifulSoup
 import json
 import os
 from google.cloud import firestore
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.service import Service
 
 # Timezone
 IST = ZoneInfo("Asia/Kolkata")
@@ -26,23 +31,32 @@ def init_firestore():
     creds_json = os.getenv("FIREBASE_CREDENTIALS")
     project_id = os.getenv("FIRESTORE_PROJECT_ID")
     if not creds_json or not project_id:
-      logger.error("Missing Firebase credentials in environment")
+      logger.error("Missing Firebase credentials")
       return None
     creds = json.loads(creds_json)
     return firestore.Client.from_service_account_info(creds, project=project_id)
   except Exception as e:
-    logger.error(f"Firebase initialization failed: {e}")
+    logger.error(f"Firebase init failed: {e}")
     return None
 
 db = init_firestore()
 
-def get_session():
-  """Create HTTP session with retries."""
-  session = requests.Session()
-  session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-  })
-  return session
+def get_driver():
+  """Get Chrome WebDriver for Selenium."""
+  try:
+    options = webdriver.ChromeOptions()
+    options.add_argument('--headless')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu')
+    options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+    
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    return driver
+  except Exception as e:
+    logger.error(f"WebDriver init failed: {e}")
+    return None
 
 def parse_number(text):
   """Parse numbers from strings."""
@@ -59,125 +73,109 @@ def parse_number(text):
       return 0
 
 def fetch_bse_ipos():
-  """Fetch live IPOs from BSE - DEBUGGED VERSION."""
+  """Fetch live IPOs from BSE using Selenium."""
+  driver = None
   try:
-    session = get_session()
+    logger.info("Initializing Selenium WebDriver...")
+    driver = get_driver()
+    if not driver:
+      return []
+    
     url = "https://www.bseindia.com/publicissue.html"
-    response = session.get(url, timeout=30)
-    soup = BeautifulSoup(response.text, 'html.parser')
+    logger.info(f"Navigating to {url}")
+    driver.get(url)
+    
+    # Wait for table to load
+    logger.info("Waiting for IPO table to render...")
+    WebDriverWait(driver, 10).until(
+      EC.presence_of_all_elements_located((By.TAG_NAME, "tr"))
+    )
+    
+    # Give JS time to finish rendering
+    time.sleep(2)
+    
+    # Get rendered HTML
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
     
     ipos = []
-    
-    # Find all tables
-    tables = soup.find_all('table')
-    logger.info(f"Found {len(tables)} tables on page")
-    
-    # Find the table containing "Security Name" header
     table = None
-    for idx, tbl in enumerate(tables):
+    for tbl in soup.find_all('table'):
       headers = tbl.find_all('th')
-      header_text = ' '.join([str(h.get_text(strip=True)) for h in headers])
-      if 'Security Name' in header_text:
-        logger.info(f"Found target table at index {idx}")
-        logger.info(f"Headers: {header_text[:100]}...")
+      if headers and any('Security Name' in str(h) for h in headers):
         table = tbl
         break
     
     if not table:
-      logger.warning("No IPO table found on BSE")
+      logger.warning("No IPO table found")
       return ipos
     
-    rows = table.find_all('tr')[1:]  # Skip header row
-    logger.info(f"Found {len(rows)} data rows in table")
+    rows = table.find_all('tr')[1:]
+    logger.info(f"Found {len(rows)} rows")
     
-    for row_idx, row in enumerate(rows[:5]):
+    for row in rows:
       try:
         cols = row.find_all('td')
-        if len(cols) == 0:
+        if len(cols) < 8:
           continue
         
-        logger.info(f"\n--- ROW {row_idx} ---")
-        logger.info(f"Total columns: {len(cols)}")
+        security_link = cols[0].find('a')
+        security_name = security_link.get_text(strip=True) if security_link else cols[0].get_text(strip=True)
+        exchange_platform = cols[1].get_text(strip=True)
+        issue_status = cols[7].get_text(strip=True)
         
-        # Log all column values
-        for col_idx, col in enumerate(cols):
-          col_text = col.get_text(strip=True)[:50]
-          logger.info(f"Col[{col_idx}]: {col_text}")
-        
-        # Now try to extract with different column indices
-        if len(cols) >= 8:
-          security_name = cols[0].get_text(strip=True)
-          exchange_platform = cols[1].get_text(strip=True)
-          issue_status_col7 = cols[7].get_text(strip=True)
+        if issue_status.upper() == "LIVE":
+          ipo_id = None
+          if security_link and 'href' in security_link.attrs:
+            href = security_link['href']
+            if 'id=' in href:
+              ipo_id = href.split('id=')[1].split('&')[0]
           
-          logger.info(f"Security: {security_name}")
-          logger.info(f"Platform: {exchange_platform}")
-          logger.info(f"Status[7]: {issue_status_col7}")
-          
-          # Check last column too
-          last_col = cols[-1].get_text(strip=True)
-          logger.info(f"Last Col: {last_col}")
-          
-          # Try to find "Live" in any column
-          live_found = False
-          live_col_idx = -1
-          for c_idx, col in enumerate(cols):
-            if 'Live' in col.get_text(strip=True) or 'Forthcoming' in col.get_text(strip=True):
-              live_found = True
-              live_col_idx = c_idx
-              logger.info(f"Status column is actually at index {c_idx}: {col.get_text(strip=True)}")
-              break
-          
-          if live_found and "Live" in cols[live_col_idx].get_text(strip=True):
-            logger.info(f"✓ FOUND LIVE IPO: {security_name}")
-            # Extract IPO ID from the link
-            ipo_id = None
-            security_link = cols[0].find('a')
-            if security_link and 'href' in security_link.attrs:
-              href = security_link['href']
-              if 'id=' in href:
-                ipo_id = href.split('id=')[1].split('&')[0]
-            
-            ipos.append({
-              'security_name': security_name,
-              'exchange_platform': exchange_platform,
-              'ipo_id': ipo_id,
-              'status': 'Live',
-              'start_date': cols[2].get_text(strip=True) if len(cols) > 2 else '',
-              'end_date': cols[3].get_text(strip=True) if len(cols) > 3 else ''
-            })
+          logger.info(f"✓ Found LIVE: {security_name}")
+          ipos.append({
+            'security_name': security_name,
+            'exchange_platform': exchange_platform,
+            'ipo_id': ipo_id,
+            'status': 'Live',
+            'start_date': cols[2].get_text(strip=True) if len(cols) > 2 else '',
+            'end_date': cols[3].get_text(strip=True) if len(cols) > 3 else ''
+          })
       except Exception as e:
-        logger.error(f"Error parsing row {row_idx}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.debug(f"Row parse error: {e}")
         continue
     
-    logger.info(f"\n\nTotal LIVE IPOs found: {len(ipos)}")
+    logger.info(f"Total LIVE IPOs: {len(ipos)}")
     return ipos
     
   except Exception as e:
-    logger.error(f"Error fetching BSE IPOs: {e}")
+    logger.error(f"Error fetching IPOs: {e}")
     import traceback
     logger.error(traceback.format_exc())
     return []
+  finally:
+    if driver:
+      driver.quit()
+      logger.info("WebDriver closed")
 
 def scrape_bse_subscription(ipo_data):
   """Scrape BSE subscription data."""
+  driver = None
   try:
     ipo_id = ipo_data.get('ipo_id')
     if not ipo_id:
-      logger.warning(f"No IPO ID for {ipo_data['security_name']}")
       return None
     
-    session = get_session()
-    url = f"https://www.bseindia.com/markets/publicIssues/CummDemandSchedule.aspx?ID={ipo_id}&status=L"
-    logger.info(f"Fetching: {url}")
-    response = session.get(url, timeout=30)
-    soup = BeautifulSoup(response.text, 'html.parser')
+    driver = get_driver()
+    if not driver:
+      return None
     
+    url = f"https://www.bseindia.com/markets/publicIssues/CummDemandSchedule.aspx?ID={ipo_id}&status=L"
+    logger.info(f"Fetching subscription data: {security_name}")
+    driver.get(url)
+    time.sleep(2)
+    
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
     table = soup.find('table')
     if not table:
-      logger.warning(f"No subscription data for {ipo_data['security_name']}")
       return None
     
     categories = {}
@@ -205,7 +203,7 @@ def scrape_bse_subscription(ipo_data):
         elif 'NII' in category or 'NON' in category:
           categories['NII'] = {'offered': shares_offered, 'bid': shares_bid, 'subscription': subscription}
       except Exception as e:
-        logger.debug(f"Error parsing subscription row: {e}")
+        logger.debug(f"Subscription parse error: {e}")
         continue
     
     if not categories:
@@ -227,10 +225,13 @@ def scrape_bse_subscription(ipo_data):
     return result
     
   except Exception as e:
-    logger.error(f"Error scraping: {e}")
+    logger.error(f"Scraping error: {e}")
     import traceback
     logger.error(traceback.format_exc())
     return None
+  finally:
+    if driver:
+      driver.quit()
 
 def save_to_firestore(data):
   """Save subscription data to Firestore."""
@@ -243,18 +244,18 @@ def save_to_firestore(data):
     doc_id = f"{ipo_slug}__{timestamp.strftime('%Y%m%d_%H%M')}"
     
     db.collection('ipo_subscriptions').document(doc_id).set(data)
-    logger.info(f"Saved {doc_id} to Firestore")
+    logger.info(f"✓ Saved {doc_id}")
     return True
     
   except Exception as e:
-    logger.error(f"Error saving: {e}")
+    logger.error(f"Save error: {e}")
     return False
 
 def run_scraper():
   """Main scraper execution."""
-  logger.info("=" * 50)
-  logger.info("Starting IPO Subscription Scraper - DEBUGGED")
-  logger.info("=" * 50)
+  logger.info("=" * 60)
+  logger.info("IPO Subscription Scraper - SELENIUM (JavaScript Rendering)")
+  logger.info("=" * 60)
   
   ipos = fetch_bse_ipos()
   if not ipos:
@@ -264,21 +265,20 @@ def run_scraper():
   success_count = 0
   for ipo in ipos:
     logger.info(f"Processing: {ipo['security_name']}")
-    time.sleep(random.uniform(1, 3))
+    time.sleep(random.uniform(2, 4))
     
     data = scrape_bse_subscription(ipo)
     if data:
       if save_to_firestore(data):
         success_count += 1
-        logger.info(f"✓ {ipo['security_name']}")
       else:
-        logger.error(f"✗ Failed to save {ipo['security_name']}")
+        logger.error(f"Failed to save {ipo['security_name']}")
     else:
-      logger.warning(f"✗ No data for {ipo['security_name']}")
+      logger.warning(f"No subscription data for {ipo['security_name']}")
   
-  logger.info("=" * 50)
-  logger.info(f"Success: {success_count}/{len(ipos)}")
-  logger.info("=" * 50)
+  logger.info("=" * 60)
+  logger.info(f"Scraper completed. Success: {success_count}/{len(ipos)}")
+  logger.info("=" * 60)
 
 if __name__ == "__main__":
   run_scraper()
