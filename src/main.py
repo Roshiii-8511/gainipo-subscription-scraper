@@ -80,7 +80,7 @@ def get_driver():
             driver = webdriver.Chrome(chromedriver_path, options=options)
         
         if not driver:
-            return []
+            return None
         
         logger.info("✓ WebDriver initialized")
         return driver
@@ -100,37 +100,46 @@ def fetch_bse_ipos():
         logger.info(f"Navigating to {url}")
         driver.get(url)
         
-        # Wait for table to load
+        # Wait for page to fully load
         logger.info("Waiting for IPO table to render...")
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_all_elements_located((By.TAG_NAME, "tr"))
-        )
+        time.sleep(10)  # Give page time to render JavaScript
         
-        # Give JS time to finish rendering
-        time.sleep(7)
-        
-        # Get rendered HTML
+        # Try multiple selectors to find IPO data
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         
-        # Parse IPO table
         ipos = []
-        table = soup.find('table')
         
-        if table:
-            for row in table.find_all('tr')[1:]:  # Skip header
-                cols = row.find_all('td')
-                if len(cols) >= 3:
-                    ipos.append({
-                        'security_name': cols[0].text.strip(),
-                        'issue_size': cols[1].text.strip(),
-                        'price_band': cols[2].text.strip(),
-                    })
+        # Try finding all tables and extract data
+        tables = soup.find_all('table')
+        logger.info(f"Found {len(tables)} tables on page")
+        
+        if tables:
+            # Usually the first or second table contains IPOs
+            for table_idx, table in enumerate(tables[:3]):
+                logger.info(f"Processing table {table_idx}")
+                rows = table.find_all('tr')
+                logger.info(f"Table {table_idx} has {len(rows)} rows")
+                
+                for row_idx, row in enumerate(rows[1:]):  # Skip header
+                    cols = row.find_all('td')
+                    
+                    if len(cols) >= 2:
+                        # Extract text from cells
+                        company_name = cols[0].get_text(strip=True)
+                        
+                        # Filter out empty rows and headers
+                        if company_name and len(company_name) > 3:
+                            logger.info(f"Found IPO: {company_name}")
+                            ipos.append({
+                                'security_name': company_name,
+                                'issue_type': cols[1].get_text(strip=True) if len(cols) > 1 else 'N/A',
+                            })
         
         logger.info(f"Found {len(ipos)} active IPOs")
         return ipos
     
     except Exception as e:
-        logger.error(f"Fetch error: {e}")
+        logger.error(f"Fetch error: {e}", exc_info=True)
         return []
     finally:
         if driver:
@@ -149,15 +158,12 @@ def scrape_bse_subscription(ipo):
         
         url = "https://www.bseindia.com/publicissue.html"
         driver.get(url)
-        
-        # Wait and search for IPO
         time.sleep(random.uniform(2, 4))
         
-        # Get rendered HTML
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         
         data = {
-            'ipo_slug': security_name.lower().replace(' ', '-'),
+            'ipo_slug': security_name.lower().replace(' ', '-')[:50],
             'security_name': security_name,
             'subscription_data': {
                 'retail': 'N/A',
@@ -170,7 +176,7 @@ def scrape_bse_subscription(ipo):
         return data
     
     except Exception as e:
-        logger.error(f"Scrape error: {e}")
+        logger.error(f"Scrape error: {e}", exc_info=True)
         return None
     finally:
         if driver:
@@ -203,6 +209,7 @@ def run_scraper():
     
     if not ipos:
         logger.warning("No live IPOs found")
+        logger.warning("This may be due to: market hours, data not loaded, or page structure change")
         return
     
     success_count = 0
