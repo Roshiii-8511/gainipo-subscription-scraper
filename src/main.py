@@ -52,6 +52,7 @@ def init_firestore():
         
         creds = json.loads(creds_json)
         db = firestore.Client.from_service_account_info(creds, project=project_id)
+        logger.info("✓ Firestore initialized")
         return db
     except Exception as e:
         logger.error(f"Firestore init failed: {e}")
@@ -96,46 +97,62 @@ def fetch_bse_ipos():
         return []
     
     try:
-        url = "https://www.bseindia.com/publicissue.html"
+        # Use the correct URL for live IPOs
+        url = "https://www.bseindia.com/markets/PublicIssues/IPOIssues_new.aspx?id=1&Type=p"
         logger.info(f"Navigating to {url}")
         driver.get(url)
         
-        # Wait for page to fully load
+        # Wait for the table to load
         logger.info("Waiting for IPO table to render...")
-        time.sleep(10)  # Give page time to render JavaScript
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_all_elements_located((By.TAG_NAME, "tr"))
+        )
+        time.sleep(5)  # Extra wait for full rendering
         
-        # Try multiple selectors to find IPO data
         soup = BeautifulSoup(driver.page_source, 'html.parser')
-        
         ipos = []
         
-        # Try finding all tables and extract data
-        tables = soup.find_all('table')
-        logger.info(f"Found {len(tables)} tables on page")
+        # Find the main data table
+        table = soup.find('table')
+        if not table:
+            logger.warning("No table found on page")
+            return []
         
-        if tables:
-            # Usually the first or second table contains IPOs
-            for table_idx, table in enumerate(tables[:3]):
-                logger.info(f"Processing table {table_idx}")
-                rows = table.find_all('tr')
-                logger.info(f"Table {table_idx} has {len(rows)} rows")
-                
-                for row_idx, row in enumerate(rows[1:]):  # Skip header
-                    cols = row.find_all('td')
+        rows = table.find_all('tr')
+        logger.info(f"Found table with {len(rows)} rows")
+        
+        # Parse each row (skip header)
+        for idx, row in enumerate(rows[1:]):
+            try:
+                cols = row.find_all('td')
+                if len(cols) >= 8:  # At least 8 columns expected
+                    security_name = cols[0].get_text(strip=True)
+                    exchange = cols[1].get_text(strip=True)
+                    start_date = cols[2].get_text(strip=True)
+                    end_date = cols[3].get_text(strip=True)
+                    offer_price = cols[4].get_text(strip=True)
+                    face_value = cols[5].get_text(strip=True)
+                    issue_type = cols[6].get_text(strip=True)
+                    status = cols[7].get_text(strip=True)
                     
-                    if len(cols) >= 2:
-                        # Extract text from cells
-                        company_name = cols[0].get_text(strip=True)
-                        
-                        # Filter out empty rows and headers
-                        if company_name and len(company_name) > 3:
-                            logger.info(f"Found IPO: {company_name}")
-                            ipos.append({
-                                'security_name': company_name,
-                                'issue_type': cols[1].get_text(strip=True) if len(cols) > 1 else 'N/A',
-                            })
+                    # Only include live IPOs
+                    if security_name and status.lower() == 'live':
+                        logger.info(f"Found Live IPO: {security_name}")
+                        ipos.append({
+                            'security_name': security_name,
+                            'exchange': exchange,
+                            'start_date': start_date,
+                            'end_date': end_date,
+                            'offer_price': offer_price,
+                            'face_value': face_value,
+                            'issue_type': issue_type,
+                            'status': status,
+                        })
+            except Exception as e:
+                logger.debug(f"Error parsing row {idx}: {e}")
+                continue
         
-        logger.info(f"Found {len(ipos)} active IPOs")
+        logger.info(f"Total live IPOs found: {len(ipos)}")
         return ipos
     
     except Exception as e:
@@ -145,90 +162,86 @@ def fetch_bse_ipos():
         if driver:
             driver.quit()
 
-def scrape_bse_subscription(ipo):
-    """Scrape subscription data for IPO."""
-    driver = get_driver()
-    if not driver:
-        return None
-    
+def scrape_subscription_details(driver, ipo):
+    """Scrape detailed subscription data for an IPO."""
     try:
-        # Navigate to IPO subscription page
         security_name = ipo.get('security_name')
-        logger.info(f"Scraping: {security_name}")
+        logger.info(f"Fetching subscription details for {security_name}")
         
-        url = "https://www.bseindia.com/publicissue.html"
-        driver.get(url)
-        time.sleep(random.uniform(2, 4))
-        
+        # Try to find subscription data on current page
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         
-        data = {
-            'ipo_slug': security_name.lower().replace(' ', '-')[:50],
-            'security_name': security_name,
-            'subscription_data': {
-                'retail': 'N/A',
-                'hni': 'N/A',
-                'institutional': 'N/A',
-            },
-            'scraped_at': datetime.now(IST).isoformat(),
+        # Extract subscription data if available
+        subscription_data = {
+            'retail': 'N/A',
+            'hni': 'N/A',
+            'institutional': 'N/A',
+            'employee': 'N/A',
         }
         
-        return data
-    
+        return subscription_data
     except Exception as e:
-        logger.error(f"Scrape error: {e}", exc_info=True)
+        logger.error(f"Subscription fetch error: {e}")
         return None
-    finally:
-        if driver:
-            driver.quit()
 
 def save_to_firestore(data):
-    """Save subscription data to Firestore."""
+    """Save IPO data to Firestore."""
     if not db or not data:
         return False
     
     try:
-        ipo_slug = data['ipo_slug']
+        ipo_slug = data['security_name'].lower().replace(' ', '-')[:50]
         timestamp = datetime.now(IST)
         doc_id = f"{ipo_slug}__{timestamp.strftime('%Y%m%d_%H%M')}"
         
         db.collection('ipo_subscriptions').document(doc_id).set(data)
-        logger.info(f"✓ Saved {doc_id}")
+        logger.info(f"✓ Saved to Firestore: {doc_id}")
         return True
     except Exception as e:
-        logger.error(f"Save error: {e}")
+        logger.error(f"Firestore save error: {e}")
         return False
 
 def run_scraper():
     """Main scraper execution."""
-    logger.info("="*60)
-    logger.info("IPO Subscription Scraper - SELENIUM (JavaScript Rendering)")
-    logger.info("="*60)
+    logger.info("="*70)
+    logger.info("IPO SUBSCRIPTION SCRAPER - SELENIUM (JavaScript Rendering)")
+    logger.info("="*70)
     
     ipos = fetch_bse_ipos()
     
     if not ipos:
-        logger.warning("No live IPOs found")
-        logger.warning("This may be due to: market hours, data not loaded, or page structure change")
+        logger.warning("No live IPOs found on BSE")
+        logger.info("="*70)
         return
     
     success_count = 0
     for ipo in ipos:
-        logger.info(f"Processing: {ipo['security_name']}")
-        time.sleep(random.uniform(2, 4))
-        
-        data = scrape_bse_subscription(ipo)
-        if data:
-            if save_to_firestore(data):
+        try:
+            logger.info(f"\nProcessing IPO: {ipo['security_name']}")
+            logger.info(f"  Exchange: {ipo['exchange']}")
+            logger.info(f"  Type: {ipo['issue_type']}")
+            logger.info(f"  Start Date: {ipo['start_date']}")
+            logger.info(f"  End Date: {ipo['end_date']}")
+            
+            # Add scraped timestamp
+            ipo['scraped_at'] = datetime.now(IST).isoformat()
+            
+            # Save to Firestore
+            if save_to_firestore(ipo):
                 success_count += 1
             else:
-                logger.error(f"Failed to save {ipo['security_name']}")
-        else:
-            logger.warning(f"No subscription data for {ipo['security_name']}")
+                logger.error(f"Failed to save {ipo['security_name']} to Firestore")
+            
+            # Rate limiting
+            time.sleep(random.uniform(1, 2))
+            
+        except Exception as e:
+            logger.error(f"Error processing {ipo.get('security_name')}: {e}")
+            continue
     
-    logger.info("="*60)
-    logger.info(f"Scraper completed. Success: {success_count}/{len(ipos)}")
-    logger.info("="*60)
+    logger.info("="*70)
+    logger.info(f"RESULTS: Successfully saved {success_count}/{len(ipos)} IPOs to Firestore")
+    logger.info("="*70)
 
 if __name__ == "__main__":
     run_scraper()
