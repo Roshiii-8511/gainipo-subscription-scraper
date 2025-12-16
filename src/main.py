@@ -1,4 +1,4 @@
-"""IPO Subscription Scraper - REAL-TIME BSE/NSE DATA EXTRACTION"""
+"""IPO Subscription Scraper - Live Subscription Data from BSE/NSE"""
 import time
 import random
 import logging
@@ -72,10 +72,10 @@ def get_driver():
 def fetch_bse_ipo_list(driver):
     """Fetch IPO list from BSE"""
     try:
-        url = "https://www.bseindia.com/markets/PublicIssues/IPOIssues_new.aspx?id=1&Type=p"
+        url = "https://www.bseindia.com/publicissue.html"
         logger.info(f"Fetching IPO list from: {url}")
         driver.get(url)
-        time.sleep(3)
+        time.sleep(4)
         
         html_content = driver.page_source
         soup = BeautifulSoup(html_content, 'html.parser')
@@ -86,19 +86,22 @@ def fetch_bse_ipo_list(driver):
         
         for row in rows:
             cells = row.find_all('td')
-            if len(cells) >= 2:
-                ipo_name = cells[0].get_text(strip=True)
-                
-                link_tag = cells[0].find('a')
-                if link_tag and link_tag.get('href'):
-                    ipo_id = extract_ipo_id_from_url(link_tag['href'])
-                    if ipo_name and ipo_id:
-                        ipos.append({
-                            'security_name': ipo_name,
-                            'ipo_id': ipo_id,
-                            'url': link_tag['href']
-                        })
-                        logger.info(f"Found IPO: {ipo_name} (ID: {ipo_id})")
+            if len(cells) >= 3:
+                try:
+                    ipo_name = cells[0].get_text(strip=True)
+                    link_tag = cells[0].find('a')
+                    if link_tag and link_tag.get('href'):
+                        ipo_id = extract_ipo_id(link_tag['href'])
+                        if ipo_name and ipo_id:
+                            ipos.append({
+                                'security_name': ipo_name,
+                                'ipo_id': ipo_id,
+                                'url': link_tag['href']
+                            })
+                            logger.info(f"Found IPO: {ipo_name} (ID: {ipo_id})")
+                except Exception as e:
+                    logger.debug(f"Error parsing row: {e}")
+                    continue
         
         logger.info(f"Total IPOs found: {len(ipos)}")
         return ipos
@@ -106,99 +109,101 @@ def fetch_bse_ipo_list(driver):
         logger.error(f"Error fetching BSE IPO list: {e}")
         return []
 
-def extract_ipo_id_from_url(url):
-    """Extract IPO ID from URL"""
-    match = re.search(r'id=(\d+)', url)
+def extract_ipo_id(url_or_text):
+    """Extract IPO ID from URL or onclick text"""
+    match = re.search(r'id=(\d+)', str(url_or_text))
+    if match:
+        return match.group(1)
+    match = re.search(r'\((\d+)[\,\)]", str(url_or_text))
     return match.group(1) if match else None
 
-def fetch_subscription_data_bse(driver, ipo):
-    """Fetch real-time subscription data from BSE detail page"""
+def fetch_bse_subscription_data(driver, ipo):
+    """Fetch subscription data from BSE Cumulative Demand Schedule"""
     try:
         ipo_id = ipo['ipo_id']
-        detail_url = f"https://www.bseindia.com/markets/publicIssues/DisplayIPO.aspx?id={ipo_id}&type=IPO&idtype=1&status=L"
+        detail_url = f"https://www.bseindia.com/markets/publicIssues/DisplayIPO.aspx?id={ipo_id}"
         
-        logger.info(f"Fetching subscription data from: {detail_url}")
+        logger.info(f"Fetching BSE data from: {detail_url}")
         driver.get(detail_url)
-        time.sleep(2)
-        
-        # Wait for page to load
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_all_elements_located((By.TAG_NAME, "table"))
-        )
-        
-        html = driver.page_source
-        soup = BeautifulSoup(html, 'html.parser')
+        time.sleep(3)
         
         subscription_data = {
             'retail': {},
             'hni': {},
             'institutional': {},
-            'timestamp': datetime.now(IST).isoformat()
+            'timestamp': datetime.now(IST).isoformat(),
+            'source': 'BSE'
         }
         
-        # Extract subscription data from BSE Bid Details tab
+        try:
+            cumulative_button = driver.find_element(By.XPATH, "//a[contains(text(), 'Cumulative Demand Schedule')]")
+            logger.info("Found Cumulative Demand Schedule button")
+            driver.execute_script("arguments[0].click();", cumulative_button)
+            time.sleep(2)
+        except Exception as e:
+            logger.debug(f"Could not click Cumulative button: {e}")
+        
+        html = driver.page_source
+        soup = BeautifulSoup(html, 'html.parser')
+        
         tables = soup.find_all('table')
-        logger.info(f"Found {len(tables)} tables on detail page")
+        logger.info(f"Found {len(tables)} tables")
         
         for table in tables:
             rows = table.find_all('tr')
-            for i, row in enumerate(rows):
+            for row in rows:
                 cells = row.find_all('td')
                 if len(cells) >= 2:
-                    label = cells[0].get_text(strip=True).lower()
-                    
-                    # Extract Retail data
-                    if 'retail' in label or 'rii' in label:
-                        if 'bid' in label or 'quantity' in label:
-                            try:
-                                value = cells[1].get_text(strip=True).replace(',', '')
-                                if value.isdigit():
-                                    subscription_data['retail']['quantity'] = int(value)
-                            except:
-                                pass
-                        if 'ratio' in label or 'times' in label:
-                            try:
-                                value = cells[1].get_text(strip=True)
-                                subscription_data['retail']['ratio'] = float(value)
-                            except:
-                                pass
-                    
-                    # Extract HNI data
-                    if 'hni' in label or 'high net worth' in label:
-                        if 'bid' in label or 'quantity' in label:
-                            try:
-                                value = cells[1].get_text(strip=True).replace(',', '')
-                                if value.isdigit():
-                                    subscription_data['hni']['quantity'] = int(value)
-                            except:
-                                pass
-                        if 'ratio' in label or 'times' in label:
-                            try:
-                                value = cells[1].get_text(strip=True)
-                                subscription_data['hni']['ratio'] = float(value)
-                            except:
-                                pass
-                    
-                    # Extract Institutional data
-                    if 'institutional' in label or 'qib' in label:
-                        if 'bid' in label or 'quantity' in label:
-                            try:
-                                value = cells[1].get_text(strip=True).replace(',', '')
-                                if value.isdigit():
-                                    subscription_data['institutional']['quantity'] = int(value)
-                            except:
-                                pass
-                        if 'ratio' in label or 'times' in label:
-                            try:
-                                value = cells[1].get_text(strip=True)
-                                subscription_data['institutional']['ratio'] = float(value)
-                            except:
-                                pass
+                    try:
+                        label_text = cells[0].get_text(strip=True).lower()
+                        value_text = cells[1].get_text(strip=True)
+                        
+                        if 'retail' in label_text or 'rii' in label_text:
+                            if 'ratio' in label_text or 'times' in label_text:
+                                try:
+                                    subscription_data['retail']['ratio'] = float(value_text)
+                                except:
+                                    pass
+                            elif 'qty' in label_text or 'shares' in label_text:
+                                try:
+                                    val = value_text.replace(',', '').replace('x', '')
+                                    subscription_data['retail']['quantity'] = int(float(val))
+                                except:
+                                    pass
+                        
+                        elif 'hni' in label_text or 'high net worth' in label_text:
+                            if 'ratio' in label_text or 'times' in label_text:
+                                try:
+                                    subscription_data['hni']['ratio'] = float(value_text)
+                                except:
+                                    pass
+                            elif 'qty' in label_text or 'shares' in label_text:
+                                try:
+                                    val = value_text.replace(',', '').replace('x', '')
+                                    subscription_data['hni']['quantity'] = int(float(val))
+                                except:
+                                    pass
+                        
+                        elif 'institutional' in label_text or 'qib' in label_text:
+                            if 'ratio' in label_text or 'times' in label_text:
+                                try:
+                                    subscription_data['institutional']['ratio'] = float(value_text)
+                                except:
+                                    pass
+                            elif 'qty' in label_text or 'shares' in label_text:
+                                try:
+                                    val = value_text.replace(',', '').replace('x', '')
+                                    subscription_data['institutional']['quantity'] = int(float(val))
+                                except:
+                                    pass
+                    except Exception as e:
+                        logger.debug(f"Error processing cell: {e}")
+                        continue
         
-        logger.info(f"Extracted subscription data: {subscription_data}")
+        logger.info(f"BSE data extracted: {subscription_data}")
         return subscription_data
     except Exception as e:
-        logger.error(f"Error fetching subscription data for {ipo['security_name']}: {e}")
+        logger.error(f"Error fetching BSE subscription data: {e}")
         return None
 
 def save_to_firestore(ipo, subscription_data):
@@ -208,68 +213,62 @@ def save_to_firestore(ipo, subscription_data):
         return False
     
     try:
-        ipo_slug = ipo['security_name'].lower().replace(' ', '_')
+        ipo_slug = ipo['security_name'].lower().replace(' ', '_').replace('&', 'and')
         doc_data = {
             'ipo_slug': ipo_slug,
             'security_name': ipo['security_name'],
             'ipo_id': ipo['ipo_id'],
             'subscription_data': subscription_data,
             'updated_at': datetime.now(IST).isoformat(),
-            'bse_url': ipo.get('url', '')
         }
         
-        db.collection('ipo_subscriptions').document(ipo_slug).set(
-            doc_data,
-            merge=True
-        )
+        db.collection('ipo_subscriptions').document(ipo_slug).set(doc_data, merge=True)
         logger.info(f"✓ Saved to Firestore: {ipo['security_name']}")
         return True
     except Exception as e:
         logger.error(f"Error saving to Firestore: {e}")
         return False
 
-def run_scraper():
-    driver = get_driver()
-    if not driver:
-        logger.error("Cannot get WebDriver")
-        return
-    
-    success_count = 0
+def main():
+    driver = None
     try:
-        for ipo in ipos:
-            logger.info(f"\nProcessing: {ipo['security_name']}")
-            
-            # Fetch subscription data
-            subscription_data = fetch_subscription_data_bse(driver, ipo)
-            
-            # Save to Firestore
-            if save_to_firestore(ipo, subscription_data):
-                success_count += 1
-            
-            time.sleep(random.uniform(2, 4))
+        driver = get_driver()
+        if not driver:
+            logger.error("Cannot initialize WebDriver")
+            return
         
-        finally:
-            if driver:
-                driver.quit()
+        ipos = fetch_bse_ipo_list(driver)
+        if not ipos:
+            logger.warning("No IPOs found")
+            return
         
-        logger.info("═"*70)
-        logger.info(f"RESULTS: Saved {success_count}/{len(ipos)} IPOs with subscription data")
+        logger.info(f"Processing {len(ipos)} IPOs...")
+        success_count = 0
+        
+        for ipo in ipos[:3]:  
+            try:
+                logger.info(f"\nProcessing: {ipo['security_name']}")
+                subscription_data = fetch_bse_subscription_data(driver, ipo)
+                
+                if subscription_data:
+                    if save_to_firestore(ipo, subscription_data):
+                        success_count += 1
+                
+                time.sleep(random.uniform(2, 4))
+            except Exception as e:
+                logger.error(f"Error processing {ipo['security_name']}: {e}")
+                continue
+        
+        logger.info(f"\n" + "═"*70)
+        logger.info(f"Completed: {success_count} IPOs saved to Firestore")
         logger.info("═"*70)
     
     except Exception as e:
-        logger.error(f"Error in scraper: {e}")
+        logger.error(f"Fatal error: {e}")
     finally:
         if driver:
             driver.quit()
+            logger.info("WebDriver closed")
 
 if __name__ == "__main__":
-    ipos = []
-    driver = get_driver()
-    if driver:
-        ipos = fetch_bse_ipo_list(driver)
-        driver.quit()
-    
-    if ipos:
-        run_scraper()
-    else:
-        logger.error("No IPOs found")
+    main()
