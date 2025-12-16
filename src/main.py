@@ -114,9 +114,8 @@ def extract_ipo_id(url_or_text):
     match = re.search(r'id=(\d+)', str(url_or_text))
     if match:
         return match.group(1)
-    match = re.search(r'\((\d+)[\,\)]", str(url_or_text))
+    match = re.search(r'\((\d+)[,\)]', str(url_or_text))
     return match.group(1) if match else None
-
 def fetch_bse_subscription_data(driver, ipo):
     """Fetch subscription data from BSE Cumulative Demand Schedule"""
     try:
