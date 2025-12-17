@@ -1,50 +1,81 @@
 import logging
 import os
 import sys
+import time
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
-import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # Add src directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config.config import Config
-from utils import create_session, retry_on_failure, clean_text
+from utils import clean_text
 
 logger = logging.getLogger(__name__)
 
 
 class BSEIPOListScraper:
-    """Scraper for BSE IPO list page"""
+    """Scraper for BSE IPO list page using Selenium"""
     
     def __init__(self):
-        self.session = create_session()
-        self.session.headers.update(Config.HEADERS)
+        self.driver = None
+    
+    def _init_driver(self):
+        """Initialize Chrome driver with headless options"""
+        chrome_options = Options()
+        chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_argument(f'user-agent={Config.HEADERS["User-Agent"]}')
+        
+        try:
+            self.driver = webdriver.Chrome(options=chrome_options)
+            logger.info("Chrome driver initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Chrome driver: {e}")
+            raise
     
     def get_live_ipos(self) -> List[Dict[str, str]]:
         """
-        Fetch list of LIVE IPOs from BSE
+        Fetch list of LIVE IPOs from BSE using Selenium
         
         Returns:
             List of dictionaries containing IPO details
         """
         logger.info("Fetching live IPOs from BSE...")
         
-        def fetch():
-            response = self.session.get(
-                Config.BSE_IPO_LIST_URL,
-                timeout=Config.REQUEST_TIMEOUT
-            )
-            response.raise_for_status()
-            return response
-        
-        response = retry_on_failure(fetch, max_retries=Config.MAX_RETRIES)
-        
-        if not response:
-            logger.error("Failed to fetch BSE IPO list page")
+        try:
+            if not self.driver:
+                self._init_driver()
+            
+            # Load the page
+            self.driver.get(Config.BSE_IPO_LIST_URL)
+            
+            # Wait for the table to load (wait for ng-repeat elements)
+            wait = WebDriverWait(self.driver, 20)
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'tr[ng-repeat]')))
+            
+            # Give Angular a bit more time to render
+            time.sleep(2)
+            
+            # Get the page source after JavaScript has run
+            html = self.driver.page_source
+            
+            return self._parse_ipo_list(html)
+            
+        except Exception as e:
+            logger.error(f"Error fetching IPO list: {e}", exc_info=True)
             return []
-        
-        return self._parse_ipo_list(response.text)
+        finally:
+            if self.driver:
+                self.driver.quit()
+                self.driver = None
     
     def _parse_ipo_list(self, html: str) -> List[Dict[str, str]]:
         """
@@ -60,7 +91,7 @@ class BSEIPOListScraper:
         ipos = []
         
         try:
-            # Find all links to DisplayIPO.aspx (these are the IPO detail pages)
+            # Find all links to DisplayIPO.aspx
             ipo_links = soup.find_all('a', href=lambda x: x and 'DisplayIPO.aspx' in x)
             
             if not ipo_links:
@@ -132,7 +163,7 @@ class BSEIPOListScraper:
     
     def get_ipo_id(self, details_url: str) -> Optional[str]:
         """
-        Extract IPO ID from IPO details page
+        Extract IPO ID from URL parameters
         
         Args:
             details_url: URL of the IPO details page
@@ -140,9 +171,9 @@ class BSEIPOListScraper:
         Returns:
             IPO ID or None
         """
-        logger.info(f"Fetching IPO ID from: {details_url}")
+        logger.info(f"Extracting IPO ID from: {details_url}")
         
-        # Try to extract ID from URL first
+        # Extract ID from URL
         # URL format: DisplayIPO.aspx?id=4362&type=IPO&idtype=1&status=L&IPONo=7504&startdt=16Dec2025
         if 'id=' in details_url:
             try:
@@ -154,55 +185,7 @@ class BSEIPOListScraper:
                     logger.info(f"Extracted IPO ID from URL: {ipo_id}")
                     return ipo_id
             except Exception as e:
-                logger.warning(f"Could not extract ID from URL: {e}")
-        
-        # Fallback: Fetch the page
-        def fetch():
-            response = self.session.get(details_url, timeout=Config.REQUEST_TIMEOUT)
-            response.raise_for_status()
-            return response
-        
-        response = retry_on_failure(fetch, max_retries=Config.MAX_RETRIES)
-        
-        if not response:
-            logger.error(f"Failed to fetch IPO details page: {details_url}")
-            return None
-        
-        return self._extract_ipo_id(response.text)
-    
-    def _extract_ipo_id(self, html: str) -> Optional[str]:
-        """
-        Extract IPO ID from Cumulative Demand Schedule link
-        
-        Args:
-            html: HTML content from IPO details page
-        
-        Returns:
-            IPO ID or None
-        """
-        soup = BeautifulSoup(html, 'lxml')
-        
-        try:
-            # Find link containing "CummDemandSchedule.aspx"
-            links = soup.find_all('a', href=True)
-            
-            for link in links:
-                href = link['href']
-                
-                # Check if this is the cumulative demand schedule link
-                if 'CummDemandSchedule.aspx' in href and 'ID=' in href:
-                    # Extract ID parameter
-                    id_part = href.split('ID=')[1]
-                    ipo_id = id_part.split('&')[0] if '&' in id_part else id_part
-                    
-                    logger.info(f"Extracted IPO ID: {ipo_id}")
-                    return ipo_id
-            
-            logger.error("Could not find Cumulative Demand Schedule link")
-            self._save_debug_html(html, "bse_ipo_details_debug.html")
-            
-        except Exception as e:
-            logger.error(f"Error extracting IPO ID: {e}")
+                logger.error(f"Could not extract ID from URL: {e}")
         
         return None
     
