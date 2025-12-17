@@ -1,7 +1,7 @@
-requests
-beautifulsoup4
-lxml
-google-cloud-firestore
-google-auth
-selenium
-webdriver-manager
+requests==2.31.0
+beautifulsoup4==4.12.3
+lxml==5.1.0
+firebase-admin==6.4.0
+python-dateutil==2.8.2
+pytz==2024.1
+playwright==1.41.0
