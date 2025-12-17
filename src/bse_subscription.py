@@ -1,7 +1,6 @@
 import logging
 from bs4 import BeautifulSoup
 from utils import get_http_session, clean_number
-from config.config import BSE_SUBSCRIPTION_URL
 
 def extract_ipo_id(detail_url):
     session = get_http_session()
@@ -10,19 +9,18 @@ def extract_ipo_id(detail_url):
 
     soup = BeautifulSoup(res.text, "lxml")
 
-    # IPONo is present in link of Cumulative Demand Schedule
     for a in soup.find_all("a"):
         href = a.get("href", "")
         if "CummDemandSchedule.aspx" in href and "ID=" in href:
             return href.split("ID=")[1].split("&")[0]
 
-    raise RuntimeError("Unable to extract IPO ID")
+    raise RuntimeError("IPO ID not found")
 
 def scrape_bse_subscription(ipo):
     ipo_id = extract_ipo_id(ipo["detail_url"])
-    url = BSE_SUBSCRIPTION_URL.format(ipo_id=ipo_id)
+    url = f"https://www.bseindia.com/markets/publicIssues/CummDemandSchedule.aspx?ID={ipo_id}&status=L"
 
-    logging.info(f"Scraping BSE LIVE subs → {ipo['name']} (ID={ipo_id})")
+    logging.info(f"Scraping LIVE subs → {ipo['name']} (ID {ipo_id})")
 
     session = get_http_session()
     res = session.get(url, timeout=20)
