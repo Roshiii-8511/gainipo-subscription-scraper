@@ -2,7 +2,6 @@ import logging
 import os
 import sys
 import re
-import json
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 import requests
@@ -50,7 +49,7 @@ class BSEIPOListScraper:
     
     def _parse_ipo_list(self, html: str) -> List[Dict[str, str]]:
         """
-        Parse IPO list HTML (Angular-rendered) and extract live IPOs
+        Parse IPO list HTML and extract live IPOs
         
         Args:
             html: HTML content from BSE IPO list page
@@ -62,76 +61,80 @@ class BSEIPOListScraper:
         ipos = []
         
         try:
-            # BSE now uses Angular.js with ng-repeat
-            # Find all rows with ng-repeat="pi in GetData.Table"
-            table_rows = soup.find_all('tr', {'ng-repeat': re.compile(r'pi in GetData\.Table')})
+            # Find all <tr> tags with class="ng-scope" (Angular-rendered rows)
+            # These contain the actual IPO data
+            table_rows = soup.find_all('tr', class_='ng-scope')
             
             if not table_rows:
-                logger.warning("No ng-repeat table rows found. Trying alternative parsing...")
-                # Try to find the table by structure
-                tables = soup.find_all('table')
-                for table in tables:
-                    rows = table.find_all('tr')
-                    if len(rows) > 1:
-                        # Check if this looks like the IPO table
-                        header_row = rows[0]
-                        headers = [th.get_text(strip=True) for th in header_row.find_all('th')]
-                        
-                        if 'Security Name' in headers and 'Exchange Platform' in headers:
-                            logger.info("Found IPO table by structure matching")
-                            table_rows = rows[1:]  # Skip header
-                            break
-            
-            if not table_rows:
-                logger.error("Could not find IPO table rows")
+                logger.error("No table rows with class 'ng-scope' found")
                 self._save_debug_html(html, "bse_ipo_list_debug.html")
                 return []
+            
+            logger.info(f"Found {len(table_rows)} total rows")
             
             for row in table_rows:
                 cols = row.find_all('td')
                 
+                # Skip rows that don't have enough columns
                 if len(cols) < 8:
                     continue
                 
-                # Extract data from columns
-                # Structure: Security Name | Exchange Platform | Start Date | End Date | Offer Price | Face Value | Type Of Issue | Issue Status
-                security_name_col = cols[0]
-                exchange_platform = clean_text(cols[1].get_text())
-                issue_type = clean_text(cols[6].get_text())
-                issue_status = clean_text(cols[7].get_text())
+                # Column structure based on your HTML:
+                # 0: Security Name (with link)
+                # 1: Exchange Platform
+                # 2: Start Date
+                # 3: End Date
+                # 4: Offer Price
+                # 5: Face Value
+                # 6: Type Of Issue
+                # 7: Issue Status
                 
-                # Filter: Only IPO/FPO type and Live status
-                if issue_type.upper() not in ['IPO', 'FPO'] or issue_status.upper() != 'LIVE':
+                try:
+                    # Extract security name and link
+                    security_name_col = cols[0]
+                    link_tag = security_name_col.find('a')
+                    
+                    if not link_tag:
+                        continue
+                    
+                    security_name = clean_text(link_tag.get_text())
+                    details_url = link_tag.get('href', '')
+                    
+                    # Extract other fields
+                    exchange_platform = clean_text(cols[1].get_text())
+                    issue_type = clean_text(cols[6].get_text())
+                    issue_status = clean_text(cols[7].get_text())
+                    
+                    # Filter: Only IPO/FPO type and Live status
+                    if issue_type.upper() not in ['IPO', 'FPO']:
+                        continue
+                    
+                    if issue_status.upper() != 'LIVE':
+                        continue
+                    
+                    # Make absolute URL
+                    if details_url and not details_url.startswith('http'):
+                        if details_url.startswith('markets'):
+                            details_url = f"https://www.bseindia.com/{details_url}"
+                        else:
+                            details_url = f"https://www.bseindia.com/markets/publicIssues/{details_url}"
+                    
+                    if not details_url:
+                        logger.warning(f"No details URL found for {security_name}")
+                        continue
+                    
+                    ipo_info = {
+                        'security_name': security_name,
+                        'exchange_platform': exchange_platform,
+                        'details_url': details_url
+                    }
+                    
+                    ipos.append(ipo_info)
+                    logger.info(f"Found live IPO: {security_name} ({exchange_platform})")
+                    
+                except Exception as e:
+                    logger.warning(f"Error parsing row: {e}")
                     continue
-                
-                # Extract security name and link
-                link_tag = security_name_col.find('a')
-                if not link_tag:
-                    logger.warning(f"No link found in row: {security_name_col.get_text()}")
-                    continue
-                
-                security_name = clean_text(link_tag.get_text())
-                details_url = link_tag.get('href', '')
-                
-                # Make absolute URL
-                if details_url and not details_url.startswith('http'):
-                    if details_url.startswith('markets'):
-                        details_url = f"https://www.bseindia.com/{details_url}"
-                    else:
-                        details_url = f"https://www.bseindia.com/markets/publicIssues/{details_url}"
-                
-                if not details_url:
-                    logger.warning(f"No details URL found for {security_name}")
-                    continue
-                
-                ipo_info = {
-                    'security_name': security_name,
-                    'exchange_platform': exchange_platform,
-                    'details_url': details_url
-                }
-                
-                ipos.append(ipo_info)
-                logger.info(f"Found live IPO: {security_name} ({exchange_platform})")
             
             logger.info(f"Total live IPOs found: {len(ipos)}")
             
