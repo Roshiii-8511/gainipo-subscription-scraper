@@ -1,6 +1,7 @@
 import logging
 from bs4 import BeautifulSoup
 from utils import get_http_session, clean_number
+from config.config import BSE_SUBSCRIPTION_URL
 
 def extract_ipo_id(detail_url):
     session = get_http_session()
@@ -18,9 +19,9 @@ def extract_ipo_id(detail_url):
 
 def scrape_bse_subscription(ipo):
     ipo_id = extract_ipo_id(ipo["detail_url"])
-    url = f"https://www.bseindia.com/markets/publicIssues/CummDemandSchedule.aspx?ID={ipo_id}&status=L"
+    url = BSE_SUBSCRIPTION_URL.format(ipo_id=ipo_id)
 
-    logging.info(f"Scraping LIVE subs → {ipo['name']} (ID {ipo_id})")
+    logging.info(f"Scraping LIVE subs → {ipo['ipo_name']} (ID {ipo_id})")
 
     session = get_http_session()
     res = session.get(url, timeout=20)
@@ -61,7 +62,7 @@ def scrape_bse_subscription(ipo):
         )
 
     return {
-        "ipo_name": ipo["name"],
+        "ipo_name": ipo["ipo_name"],
         "board": ipo["board"],
         "categories": categories,
         "total": {
