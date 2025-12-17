@@ -1,14 +1,9 @@
 import logging
 import os
 import sys
-import time
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from requests_html import HTMLSession
 
 # Add src directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -20,30 +15,14 @@ logger = logging.getLogger(__name__)
 
 
 class BSEIPOListScraper:
-    """Scraper for BSE IPO list page using Selenium"""
+    """Scraper for BSE IPO list page using requests-html"""
     
     def __init__(self):
-        self.driver = None
-    
-    def _init_driver(self):
-        """Initialize Chrome driver with headless options"""
-        chrome_options = Options()
-        chrome_options.add_argument('--headless')
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument(f'user-agent={Config.HEADERS["User-Agent"]}')
-        
-        try:
-            self.driver = webdriver.Chrome(options=chrome_options)
-            logger.info("Chrome driver initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize Chrome driver: {e}")
-            raise
+        self.session = HTMLSession()
     
     def get_live_ipos(self) -> List[Dict[str, str]]:
         """
-        Fetch list of LIVE IPOs from BSE using Selenium
+        Fetch list of LIVE IPOs from BSE
         
         Returns:
             List of dictionaries containing IPO details
@@ -51,21 +30,15 @@ class BSEIPOListScraper:
         logger.info("Fetching live IPOs from BSE...")
         
         try:
-            if not self.driver:
-                self._init_driver()
+            # Fetch the page
+            response = self.session.get(Config.BSE_IPO_LIST_URL, timeout=30)
             
-            # Load the page
-            self.driver.get(Config.BSE_IPO_LIST_URL)
+            # Render JavaScript (this executes Angular and waits for it)
+            logger.info("Rendering JavaScript...")
+            response.html.render(timeout=20, sleep=3)
             
-            # Wait for the table to load (wait for ng-repeat elements)
-            wait = WebDriverWait(self.driver, 20)
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'tr[ng-repeat]')))
-            
-            # Give Angular a bit more time to render
-            time.sleep(2)
-            
-            # Get the page source after JavaScript has run
-            html = self.driver.page_source
+            # Get the rendered HTML
+            html = response.html.html
             
             return self._parse_ipo_list(html)
             
@@ -73,9 +46,7 @@ class BSEIPOListScraper:
             logger.error(f"Error fetching IPO list: {e}", exc_info=True)
             return []
         finally:
-            if self.driver:
-                self.driver.quit()
-                self.driver = None
+            self.session.close()
     
     def _parse_ipo_list(self, html: str) -> List[Dict[str, str]]:
         """
