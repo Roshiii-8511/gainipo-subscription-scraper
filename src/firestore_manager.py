@@ -11,6 +11,6 @@ def get_db():
 db = get_db()
 
 def save_subscription(data):
-    doc_id = f"{data['ipo_name']}__{datetime.now().strftime('%Y%m%d_%H%M')}"
+    doc_id = f"{data['ipo_name']}__{datetime.utcnow().strftime('%Y%m%d_%H%M')}"
     db.collection("ipo_subscriptions").document(doc_id).set(data)
-    logging.info(f"Saved → {doc_id}")
+    logging.info(f"Saved Firestore doc → {doc_id}")
