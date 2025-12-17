@@ -1,28 +1,24 @@
 import logging
-import os
-import sys
-from typing import Dict, Any, Optional
+import re
+from typing import Optional, Dict
 from bs4 import BeautifulSoup
-
-# Add src directory to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from requests_html import HTMLSession
 
 from config.config import Config
-from utils import create_session, retry_on_failure, safe_float, safe_int, clean_text
+from utils import clean_text, retry_on_failure
 
 logger = logging.getLogger(__name__)
 
 
 class BSESubscriptionScraper:
-    """Scraper for BSE IPO subscription data"""
+    """Scraper for BSE subscription data"""
     
     def __init__(self):
-        self.session = create_session()
-        self.session.headers.update(Config.HEADERS)
+        self.session = HTMLSession()
     
-    def get_subscription_data(self, ipo_id: str) -> Optional[Dict[str, Any]]:
+    def get_subscription_data(self, ipo_id: str) -> Optional[Dict]:
         """
-        Fetch subscription data for a specific IPO
+        Fetch subscription data for an IPO
         
         Args:
             ipo_id: BSE IPO ID
@@ -30,23 +26,27 @@ class BSESubscriptionScraper:
         Returns:
             Dictionary containing subscription data or None
         """
-        url = f"{Config.BSE_SUBSCRIPTION_BASE}?ID={ipo_id}&status=L"
+        url = f"{Config.BSE_SUBSCRIPTION_URL}?ID={ipo_id}&status=L"
         logger.info(f"Fetching subscription data from: {url}")
         
-        def fetch():
-            response = self.session.get(url, timeout=Config.REQUEST_TIMEOUT)
-            response.raise_for_status()
-            return response
-        
-        response = retry_on_failure(fetch, max_retries=Config.MAX_RETRIES)
-        
-        if not response:
-            logger.error(f"Failed to fetch subscription data for IPO ID: {ipo_id}")
+        try:
+            # Fetch and render the page
+            response = self.session.get(url, timeout=30)
+            
+            # Render JavaScript to load the table
+            logger.info("Rendering JavaScript to load subscription table...")
+            response.html.render(timeout=20, sleep=3)
+            
+            html = response.html.html
+            return self._parse_subscription_data(html)
+            
+        except Exception as e:
+            logger.error(f"Error fetching subscription data: {e}", exc_info=True)
             return None
-        
-        return self._parse_subscription_data(response.text)
+        finally:
+            self.session.close()
     
-    def _parse_subscription_data(self, html: str) -> Optional[Dict[str, Any]]:
+    def _parse_subscription_data(self, html: str) -> Optional[Dict]:
         """
         Parse subscription data from HTML
         
@@ -54,126 +54,152 @@ class BSESubscriptionScraper:
             html: HTML content from subscription page
         
         Returns:
-            Dictionary containing parsed subscription data
+            Dictionary with subscription data or None
         """
         soup = BeautifulSoup(html, 'lxml')
         
         try:
-            # Find the subscription table
-            # Table ID: ContentPlaceHolder1_gvData
-            table = soup.find('table', {'id': 'ContentPlaceHolder1_gvData'})
+            # Find the main subscription table
+            # Look for table with "Category" header
+            tables = soup.find_all('table')
             
-            if not table:
+            subscription_table = None
+            for table in tables:
+                headers = table.find_all('th')
+                header_text = ' '.join([h.get_text(strip=True) for h in headers])
+                
+                if 'Category' in header_text and 'No. of shares' in header_text:
+                    subscription_table = table
+                    break
+            
+            if not subscription_table:
                 logger.error("Could not find subscription table")
                 self._save_debug_html(html, "bse_subscription_debug.html")
                 return None
             
-            rows = table.find_all('tr')
+            logger.info("Found subscription table")
             
-            if len(rows) < 2:
-                logger.error("Subscription table has insufficient rows")
-                return None
-            
-            # Initialize category data
-            categories = {
-                'QIB': {'shares_offered': 0, 'shares_bid': 0, 'times': 0.0, 'applications': 0},
-                'NII': {'shares_offered': 0, 'shares_bid': 0, 'times': 0.0, 'applications': 0},
-                'bNII': {'shares_offered': 0, 'shares_bid': 0, 'times': 0.0, 'applications': 0},
-                'sNII': {'shares_offered': 0, 'shares_bid': 0, 'times': 0.0, 'applications': 0},
-                'Retail': {'shares_offered': 0, 'shares_bid': 0, 'times': 0.0, 'applications': 0},
-                'Employee': {'shares_offered': 0, 'shares_bid': 0, 'times': 0.0, 'applications': 0},
+            # Extract subscription data
+            data = {
+                'qib': self._extract_category_data(subscription_table, 'QIB'),
+                'nii': self._extract_category_data(subscription_table, 'NII'),
+                'retail': self._extract_category_data(subscription_table, 'Retail'),
+                'total': self._extract_total_data(subscription_table)
             }
             
-            # Parse each row (skip header)
-            for row in rows[1:]:
-                cols = row.find_all('td')
-                
-                if len(cols) < 5:
-                    continue
-                
-                category = clean_text(cols[0].get_text())
-                shares_offered = safe_int(cols[1].get_text())
-                shares_bid = safe_int(cols[2].get_text())
-                times = safe_float(cols[3].get_text())
-                applications = safe_int(cols[4].get_text())
-                
-                # Map category names (BSE uses different variations)
-                category_key = self._normalize_category(category)
-                
-                if category_key and category_key in categories:
-                    categories[category_key] = {
-                        'shares_offered': shares_offered,
-                        'shares_bid': shares_bid,
-                        'times': times,
-                        'applications': applications
-                    }
-            
-            # Compute totals manually (don't trust total row)
-            total_shares_offered = sum(cat['shares_offered'] for cat in categories.values())
-            total_shares_bid = sum(cat['shares_bid'] for cat in categories.values())
-            total_applications = sum(cat['applications'] for cat in categories.values())
-            total_times = (total_shares_bid / total_shares_offered) if total_shares_offered > 0 else 0.0
-            
-            subscription_data = {
-                'categories': categories,
-                'totals': {
-                    'shares_offered': total_shares_offered,
-                    'shares_bid': total_shares_bid,
-                    'times': round(total_times, 2),
-                    'applications': total_applications
-                }
-            }
-            
-            logger.info(f"Successfully parsed subscription data. Total times: {total_times:.2f}x")
-            return subscription_data
+            logger.info(f"Extracted subscription data: {data}")
+            return data
             
         except Exception as e:
-            logger.error(f"Error parsing subscription data: {e}")
+            logger.error(f"Error parsing subscription data: {e}", exc_info=True)
             self._save_debug_html(html, "bse_subscription_error.html")
             return None
     
-    def _normalize_category(self, category: str) -> Optional[str]:
+    def _extract_category_data(self, table, category_name: str) -> Dict:
         """
-        Normalize category name to standard key
+        Extract subscription data for a specific category
         
         Args:
-            category: Raw category name from BSE
+            table: BeautifulSoup table element
+            category_name: Category to extract (QIB, NII, Retail)
         
         Returns:
-            Normalized category key or None
+            Dictionary with offered, bid, and times data
         """
-        category_upper = category.upper().strip()
+        rows = table.find_all('tr')
         
-        # Category mapping
-        mapping = {
-            'QIB': 'QIB',
-            'QUALIFIED INSTITUTIONAL BUYERS': 'QIB',
-            'NII': 'NII',
-            'NON INSTITUTIONAL INVESTORS': 'NII',
-            'BNII': 'bNII',
-            'B NII': 'bNII',
-            'BIG NII': 'bNII',
-            'SNII': 'sNII',
-            'S NII': 'sNII',
-            'SMALL NII': 'sNII',
-            'RETAIL': 'Retail',
-            'RETAIL INDIVIDUAL INVESTORS': 'Retail',
-            'EMPLOYEE': 'Employee',
-            'EMPLOYEES': 'Employee',
+        # Map category names to variations in the table
+        category_patterns = {
+            'QIB': ['Qualified Institutional Buyers', 'QIB', 'Institutional'],
+            'NII': ['Non Institutional Investors', 'NII', 'Non-Institutional'],
+            'Retail': ['Retail Individual Investors', 'Retail', 'Individual']
         }
         
-        for key, value in mapping.items():
-            if key in category_upper:
-                return value
+        patterns = category_patterns.get(category_name, [category_name])
         
-        # Log unknown categories
-        if 'TOTAL' not in category_upper:
-            logger.warning(f"Unknown category: {category}")
+        for row in rows:
+            cells = row.find_all('td')
+            if not cells or len(cells) < 3:
+                continue
+            
+            first_cell_text = clean_text(cells[0].get_text())
+            
+            # Check if this row matches the category
+            if any(pattern.lower() in first_cell_text.lower() for pattern in patterns):
+                try:
+                    offered = clean_text(cells[1].get_text()) if len(cells) > 1 else '0'
+                    bid = clean_text(cells[2].get_text()) if len(cells) > 2 else '0'
+                    times = clean_text(cells[3].get_text()) if len(cells) > 3 else '0'
+                    
+                    # Remove commas and convert to numbers
+                    offered = self._parse_number(offered)
+                    bid = self._parse_number(bid)
+                    times = self._parse_times(times)
+                    
+                    return {
+                        'offered': offered,
+                        'bid': bid,
+                        'times': times
+                    }
+                except Exception as e:
+                    logger.warning(f"Error extracting {category_name} data: {e}")
         
-        return None
+        logger.warning(f"Could not find {category_name} data in table")
+        return {'offered': 0, 'bid': 0, 'times': 0.0}
+    
+    def _extract_total_data(self, table) -> Dict:
+        """Extract total subscription data"""
+        rows = table.find_all('tr')
+        
+        for row in rows:
+            cells = row.find_all('td')
+            if not cells:
+                continue
+            
+            first_cell = clean_text(cells[0].get_text())
+            
+            # Look for "Total" or "Grand Total"
+            if 'total' in first_cell.lower() and len(cells) >= 4:
+                try:
+                    offered = self._parse_number(clean_text(cells[1].get_text()))
+                    bid = self._parse_number(clean_text(cells[2].get_text()))
+                    times = self._parse_times(clean_text(cells[3].get_text()))
+                    
+                    return {
+                        'offered': offered,
+                        'bid': bid,
+                        'times': times
+                    }
+                except Exception as e:
+                    logger.warning(f"Error extracting total data: {e}")
+        
+        logger.warning("Could not find total subscription data")
+        return {'offered': 0, 'bid': 0, 'times': 0.0}
+    
+    def _parse_number(self, text: str) -> int:
+        """Parse a number string, removing commas and converting to int"""
+        try:
+            # Remove commas and any non-digit characters except decimal point
+            cleaned = re.sub(r'[^\d.]', '', text)
+            if not cleaned or cleaned == '-':
+                return 0
+            return int(float(cleaned))
+        except:
+            return 0
+    
+    def _parse_times(self, text: str) -> float:
+        """Parse subscription times value"""
+        try:
+            # Remove any non-numeric characters except decimal point
+            cleaned = re.sub(r'[^\d.]', '', text)
+            if not cleaned or cleaned == '-':
+                return 0.0
+            return round(float(cleaned), 2)
+        except:
+            return 0.0
     
     def _save_debug_html(self, html: str, filename: str):
-        """Save HTML for debugging purposes"""
+        """Save HTML for debugging"""
         try:
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(html)
