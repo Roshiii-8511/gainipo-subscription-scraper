@@ -3,4 +3,4 @@ beautifulsoup4
 lxml
 firebase-admin
 python-dotenv
-selenium
+requests-html
