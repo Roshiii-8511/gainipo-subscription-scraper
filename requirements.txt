@@ -3,3 +3,5 @@ beautifulsoup4
 lxml
 google-cloud-firestore
 google-auth
+selenium
+webdriver-manager
