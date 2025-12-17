@@ -6,6 +6,11 @@ Scrapes live IPO subscription data from BSE and saves to Firestore
 
 import logging
 import sys
+import os
+
+# Add src directory to Python path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from bse_ipo_list import BSEIPOListScraper
 from bse_subscription import BSESubscriptionScraper
 from firestore_manager import FirestoreManager
