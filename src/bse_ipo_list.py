@@ -1,7 +1,6 @@
 import logging
 import os
 import sys
-import re
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 import requests
@@ -61,46 +60,33 @@ class BSEIPOListScraper:
         ipos = []
         
         try:
-            # Find all <tr> tags with class="ng-scope" (Angular-rendered rows)
-            # These contain the actual IPO data
-            table_rows = soup.find_all('tr', class_='ng-scope')
+            # Find all links to DisplayIPO.aspx (these are the IPO detail pages)
+            ipo_links = soup.find_all('a', href=lambda x: x and 'DisplayIPO.aspx' in x)
             
-            if not table_rows:
-                logger.error("No table rows with class 'ng-scope' found")
+            if not ipo_links:
+                logger.error("No IPO links found in the page")
                 self._save_debug_html(html, "bse_ipo_list_debug.html")
                 return []
             
-            logger.info(f"Found {len(table_rows)} total rows")
+            logger.info(f"Found {len(ipo_links)} IPO links")
             
-            for row in table_rows:
-                cols = row.find_all('td')
-                
-                # Skip rows that don't have enough columns
-                if len(cols) < 8:
-                    continue
-                
-                # Column structure based on your HTML:
-                # 0: Security Name (with link)
-                # 1: Exchange Platform
-                # 2: Start Date
-                # 3: End Date
-                # 4: Offer Price
-                # 5: Face Value
-                # 6: Type Of Issue
-                # 7: Issue Status
-                
+            for link in ipo_links:
                 try:
-                    # Extract security name and link
-                    security_name_col = cols[0]
-                    link_tag = security_name_col.find('a')
-                    
-                    if not link_tag:
+                    # Get the parent row
+                    row = link.find_parent('tr')
+                    if not row:
                         continue
                     
-                    security_name = clean_text(link_tag.get_text())
-                    details_url = link_tag.get('href', '')
+                    cols = row.find_all('td')
                     
-                    # Extract other fields
+                    if len(cols) < 8:
+                        continue
+                    
+                    # Extract security name from link
+                    security_name = clean_text(link.get_text())
+                    details_url = link.get('href', '')
+                    
+                    # Extract other fields from columns
                     exchange_platform = clean_text(cols[1].get_text())
                     issue_type = clean_text(cols[6].get_text())
                     issue_status = clean_text(cols[7].get_text())
@@ -133,7 +119,7 @@ class BSEIPOListScraper:
                     logger.info(f"Found live IPO: {security_name} ({exchange_platform})")
                     
                 except Exception as e:
-                    logger.warning(f"Error parsing row: {e}")
+                    logger.warning(f"Error parsing IPO link: {e}")
                     continue
             
             logger.info(f"Total live IPOs found: {len(ipos)}")
