@@ -145,7 +145,7 @@ class BSEIPOListScraper:
         logger.info(f"Extracting IPO ID from: {details_url}")
         
         # Extract ID from URL
-        # URL format: DisplayIPO.aspx?id=4362&type=IPO&idtype=1&status=L&IPONo=7504&startdt=16Dec2025
+        # URL format: DisplayIPO.aspx?id=4362&type=IPO&idtype=1&status=L&IPONo=7504&startdt=16/Dec/2025
         if 'id=' in details_url:
             try:
                 import urllib.parse
