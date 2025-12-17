@@ -1,4 +1,4 @@
-name: GainIPO Live Subscription Scraper
+name: GainIPO BSE Live Subscription Scraper
 
 on:
   schedule:
@@ -10,6 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@v1
 
       - name: Setup Python
         uses: actions/setup-python@v4
