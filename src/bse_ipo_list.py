@@ -1,6 +1,8 @@
 import logging
 import os
 import sys
+import re
+import json
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 import requests
@@ -48,7 +50,7 @@ class BSEIPOListScraper:
     
     def _parse_ipo_list(self, html: str) -> List[Dict[str, str]]:
         """
-        Parse IPO list HTML and extract live IPOs
+        Parse IPO list HTML (Angular-rendered) and extract live IPOs
         
         Args:
             html: HTML content from BSE IPO list page
@@ -60,47 +62,67 @@ class BSEIPOListScraper:
         ipos = []
         
         try:
-            # Find the main table containing IPO data
-            # BSE uses a table with id='ContentPlaceHolder1_gvData'
-            table = soup.find('table', {'id': 'ContentPlaceHolder1_gvData'})
+            # BSE now uses Angular.js with ng-repeat
+            # Find all rows with ng-repeat="pi in GetData.Table"
+            table_rows = soup.find_all('tr', {'ng-repeat': re.compile(r'pi in GetData\.Table')})
             
-            if not table:
-                logger.error("Could not find IPO table on BSE page")
+            if not table_rows:
+                logger.warning("No ng-repeat table rows found. Trying alternative parsing...")
+                # Try to find the table by structure
+                tables = soup.find_all('table')
+                for table in tables:
+                    rows = table.find_all('tr')
+                    if len(rows) > 1:
+                        # Check if this looks like the IPO table
+                        header_row = rows[0]
+                        headers = [th.get_text(strip=True) for th in header_row.find_all('th')]
+                        
+                        if 'Security Name' in headers and 'Exchange Platform' in headers:
+                            logger.info("Found IPO table by structure matching")
+                            table_rows = rows[1:]  # Skip header
+                            break
+            
+            if not table_rows:
+                logger.error("Could not find IPO table rows")
                 self._save_debug_html(html, "bse_ipo_list_debug.html")
                 return []
             
-            rows = table.find_all('tr')[1:]  # Skip header row
-            
-            for row in rows:
+            for row in table_rows:
                 cols = row.find_all('td')
                 
-                if len(cols) < 6:
+                if len(cols) < 8:
                     continue
                 
                 # Extract data from columns
-                # Columns: Security Name | Issue Type | Issue Status | Open Date | Close Date | Exchange Platform
-                security_name = clean_text(cols[0].get_text())
-                issue_type = clean_text(cols[1].get_text())
-                issue_status = clean_text(cols[2].get_text())
-                exchange_platform = clean_text(cols[5].get_text()) if len(cols) > 5 else ""
+                # Structure: Security Name | Exchange Platform | Start Date | End Date | Offer Price | Face Value | Type Of Issue | Issue Status
+                security_name_col = cols[0]
+                exchange_platform = clean_text(cols[1].get_text())
+                issue_type = clean_text(cols[6].get_text())
+                issue_status = clean_text(cols[7].get_text())
                 
-                # Filter: Only IPO type and Live status
-                if issue_type.upper() != 'IPO' or issue_status.upper() != 'LIVE':
+                # Filter: Only IPO/FPO type and Live status
+                if issue_type.upper() not in ['IPO', 'FPO'] or issue_status.upper() != 'LIVE':
                     continue
                 
-                # Extract link to IPO details page
-                link_tag = cols[0].find('a')
-                if not link_tag or 'href' not in link_tag.attrs:
-                    logger.warning(f"No details link found for {security_name}")
+                # Extract security name and link
+                link_tag = security_name_col.find('a')
+                if not link_tag:
+                    logger.warning(f"No link found in row: {security_name_col.get_text()}")
                     continue
                 
-                details_url = link_tag['href']
+                security_name = clean_text(link_tag.get_text())
+                details_url = link_tag.get('href', '')
                 
                 # Make absolute URL
-                if details_url.startswith('DisplayIPO.aspx'):
-                    details_url = f"https://www.bseindia.com/markets/publicIssues/{details_url}"
-                elif not details_url.startswith('http'):
-                    details_url = f"https://www.bseindia.com{details_url}"
+                if details_url and not details_url.startswith('http'):
+                    if details_url.startswith('markets'):
+                        details_url = f"https://www.bseindia.com/{details_url}"
+                    else:
+                        details_url = f"https://www.bseindia.com/markets/publicIssues/{details_url}"
+                
+                if not details_url:
+                    logger.warning(f"No details URL found for {security_name}")
+                    continue
                 
                 ipo_info = {
                     'security_name': security_name,
@@ -114,7 +136,7 @@ class BSEIPOListScraper:
             logger.info(f"Total live IPOs found: {len(ipos)}")
             
         except Exception as e:
-            logger.error(f"Error parsing IPO list: {e}")
+            logger.error(f"Error parsing IPO list: {e}", exc_info=True)
             self._save_debug_html(html, "bse_ipo_list_error.html")
         
         return ipos
@@ -131,6 +153,21 @@ class BSEIPOListScraper:
         """
         logger.info(f"Fetching IPO ID from: {details_url}")
         
+        # Try to extract ID from URL first
+        # URL format: DisplayIPO.aspx?id=4362&type=IPO&idtype=1&status=L&IPONo=7504&startdt=16Dec2025
+        if 'id=' in details_url:
+            try:
+                import urllib.parse
+                parsed = urllib.parse.urlparse(details_url)
+                params = urllib.parse.parse_qs(parsed.query)
+                if 'id' in params:
+                    ipo_id = params['id'][0]
+                    logger.info(f"Extracted IPO ID from URL: {ipo_id}")
+                    return ipo_id
+            except Exception as e:
+                logger.warning(f"Could not extract ID from URL: {e}")
+        
+        # Fallback: Fetch the page
         def fetch():
             response = self.session.get(details_url, timeout=Config.REQUEST_TIMEOUT)
             response.raise_for_status()
