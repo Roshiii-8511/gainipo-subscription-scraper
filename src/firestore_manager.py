@@ -1,9 +1,15 @@
 import logging
+import os
+import sys
 from datetime import datetime
 from typing import Dict, Any, Optional
 import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
+
+# Add src directory to path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from config.config import Config
 
 logger = logging.getLogger(__name__)
