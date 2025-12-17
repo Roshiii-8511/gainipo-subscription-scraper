@@ -16,15 +16,14 @@ def get_http_session():
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0 Safari/537.36"
         ),
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml"
+        "Accept-Language": "en-US,en;q=0.9"
     })
     return session
 
-def clean_number(text):
-    if not text:
+def clean_number(val):
+    if not val or val == "-":
         return 0
-    return int(text.replace(",", "").strip())
+    return int(val.replace(",", "").strip())
 
-def random_delay():
-    time.sleep(random.uniform(0.5, 1.5))
+def small_delay():
+    time.sleep(random.uniform(0.5, 1.2))
