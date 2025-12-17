@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 from requests_html import HTMLSession
 
 from config.config import Config
-from utils import clean_text, retry_on_failure
+from utils import clean_text
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,6 @@ class BSESubscriptionScraper:
         
         try:
             # Find the main subscription table
-            # Look for table with "Category" header
             tables = soup.find_all('table')
             
             subscription_table = None
@@ -68,7 +67,7 @@ class BSESubscriptionScraper:
                 headers = table.find_all('th')
                 header_text = ' '.join([h.get_text(strip=True) for h in headers])
                 
-                if 'Category' in header_text and 'No. of shares' in header_text:
+                if 'Category' in header_text and 'shares' in header_text:
                     subscription_table = table
                     break
             
@@ -127,14 +126,17 @@ class BSESubscriptionScraper:
             # Check if this row matches the category
             if any(pattern.lower() in first_cell_text.lower() for pattern in patterns):
                 try:
+                    # Column indices: 0=Category, 1=Offered, 2=Bid, 3=Times
                     offered = clean_text(cells[1].get_text()) if len(cells) > 1 else '0'
                     bid = clean_text(cells[2].get_text()) if len(cells) > 2 else '0'
                     times = clean_text(cells[3].get_text()) if len(cells) > 3 else '0'
                     
-                    # Remove commas and convert to numbers
+                    # Parse numbers
                     offered = self._parse_number(offered)
                     bid = self._parse_number(bid)
                     times = self._parse_times(times)
+                    
+                    logger.info(f"{category_name} - Offered: {offered}, Bid: {bid}, Times: {times}")
                     
                     return {
                         'offered': offered,
@@ -158,12 +160,14 @@ class BSESubscriptionScraper:
             
             first_cell = clean_text(cells[0].get_text())
             
-            # Look for "Total" or "Grand Total"
+            # Look for "Total" row
             if 'total' in first_cell.lower() and len(cells) >= 4:
                 try:
                     offered = self._parse_number(clean_text(cells[1].get_text()))
                     bid = self._parse_number(clean_text(cells[2].get_text()))
                     times = self._parse_times(clean_text(cells[3].get_text()))
+                    
+                    logger.info(f"Total - Offered: {offered}, Bid: {bid}, Times: {times}")
                     
                     return {
                         'offered': offered,
