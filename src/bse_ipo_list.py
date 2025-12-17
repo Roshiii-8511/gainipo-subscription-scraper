@@ -1,7 +1,13 @@
 import logging
+import os
+import sys
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 import requests
+
+# Add src directory to path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from config.config import Config
 from utils import create_session, retry_on_failure, clean_text
 
