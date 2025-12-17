@@ -1,6 +1,7 @@
 requests
 beautifulsoup4
-lxml
+lxml==4.9.3
 firebase-admin
 python-dotenv
 requests-html
+lxml_html_clean
