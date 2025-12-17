@@ -1,1 +1,1 @@
-"""Configuration module"""
+# config package initializer
