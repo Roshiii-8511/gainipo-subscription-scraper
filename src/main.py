@@ -14,8 +14,8 @@ def run():
         try:
             data = scrape_bse_subscription(ipo)
             save_subscription(data)
-        except Exception as e:
-            logging.exception(f"Failed for {ipo['name']}")
+        except Exception:
+            logging.exception(f"Failed for {ipo['ipo_name']}")
 
     logging.info("===== SCRAPER RUN COMPLETE =====")
 
