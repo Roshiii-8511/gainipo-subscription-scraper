@@ -2,24 +2,37 @@ import logging
 from bs4 import BeautifulSoup
 from utils import get_http_session
 
-BSE_IPO_LIST_URL = "https://www.bseindia.com/publicissue.html"
+BSE_LIVE_ISSUES_URL = "https://www.bseindia.com/markets/PublicIssues/PublicIssues.aspx"
 
 def fetch_live_ipos():
-    """
-    Fetch LIVE IPOs (Type = IPO, Status = Live) from BSE
-    Returns list of dicts with:
-    - name
-    - board
-    - detail_url
-    """
     session = get_http_session()
-    logging.info("Fetching LIVE IPO list from BSE")
 
-    res = session.get(BSE_IPO_LIST_URL, timeout=20)
+    payload = {
+        "ddlType": "IPO",
+        "ddlStatus": "Live"
+    }
+
+    headers = {
+        "Referer": "https://www.bseindia.com/publicissue.html",
+        "X-Requested-With": "XMLHttpRequest"
+    }
+
+    logging.info("Fetching LIVE IPO list from BSE (server-side endpoint)")
+
+    res = session.post(
+        BSE_LIVE_ISSUES_URL,
+        data=payload,
+        headers=headers,
+        timeout=20
+    )
     res.raise_for_status()
 
     soup = BeautifulSoup(res.text, "lxml")
     table = soup.find("table")
+
+    if not table:
+        logging.warning("BSE IPO table not found in response")
+        return []
 
     ipos = []
 
@@ -36,11 +49,11 @@ def fetch_live_ipos():
         if issue_type != "IPO" or status != "Live":
             continue
 
-        link_tag = cols[0].find("a")
-        if not link_tag:
+        link = cols[0].find("a")
+        if not link:
             continue
 
-        detail_url = "https://www.bseindia.com" + link_tag["href"]
+        detail_url = "https://www.bseindia.com" + link["href"]
 
         ipos.append({
             "name": security,
@@ -48,5 +61,5 @@ def fetch_live_ipos():
             "detail_url": detail_url
         })
 
-    logging.info(f"LIVE IPOs found on BSE: {len(ipos)}")
+    logging.info(f"LIVE IPOs detected: {len(ipos)}")
     return ipos
