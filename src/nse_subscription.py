@@ -1,80 +1,56 @@
-import requests
+from playwright.sync_api import sync_playwright
+import json
 import time
 
-BASE = "https://www.nseindia.com"
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Referer": "https://www.nseindia.com/market-data/all-upcoming-issues-ipo",
-    "DNT": "1",
-}
-
-
-def _bootstrap_nse_session(symbol: str, series: str) -> requests.Session:
-    """
-    Proper NSE browser-like navigation:
-    1. IPO list page
-    2. IPO detail page
-    """
-    s = requests.Session()
-    s.headers.update(HEADERS)
-
-    # 1️⃣ Hit IPO list page
-    s.get(
-        f"{BASE}/market-data/all-upcoming-issues-ipo",
-        timeout=15
-    )
-    time.sleep(1)
-
-    # 2️⃣ Hit specific IPO detail page
-    s.get(
-        f"{BASE}/market-data/issue-information",
-        params={
-            "symbol": symbol,
-            "series": series,
-            "type": "Active"
-        },
-        timeout=15
-    )
-    time.sleep(1)
-
-    return s
+NSE_BASE = "https://www.nseindia.com"
 
 
 def fetch_nse_subscription(symbol: str, series: str):
     """
-    NSE IPO subscription fetcher
-    - EQ  → Consolidated Bid Details
-    - SME → Default Bid Details
+    NSE-safe subscription fetcher using real browser.
+    Works on GitHub Actions.
     """
 
-    session = _bootstrap_nse_session(symbol, series)
-
-    api_url = f"{BASE}/api/issue-information-bid"
-
-    params = {
-        "symbol": symbol,
-        "series": series
-    }
-
-    if series == "EQ":
-        params["category"] = "CONSOLIDATED"
-
-    resp = session.get(api_url, params=params, timeout=15)
-
-    # NSE bot response = HTML instead of JSON
-    if resp.status_code != 200 or "text/html" in resp.headers.get("Content-Type", ""):
-        raise RuntimeError(
-            f"NSE blocked request ({resp.status_code}). "
-            f"Likely bot protection. Response preview:\n{resp.text[:300]}"
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"]
+        )
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            )
         )
 
-    payload = resp.json()
-    rows = payload.get("data", [])
+        page = context.new_page()
+
+        # Step 1: IPO list page
+        page.goto(
+            "https://www.nseindia.com/market-data/all-upcoming-issues-ipo",
+            wait_until="networkidle"
+        )
+
+        # Step 2: IPO detail page
+        page.goto(
+            f"https://www.nseindia.com/market-data/issue-information"
+            f"?symbol={symbol}&series={series}&type=Active",
+            wait_until="networkidle"
+        )
+
+        # Capture XHR response
+        api_url = "/api/issue-information-bid"
+
+        with page.expect_response(lambda r: api_url in r.url) as resp_info:
+            page.reload(wait_until="networkidle")
+
+        response = resp_info.value
+        data = response.json()
+
+        browser.close()
+
+    rows = data.get("data", [])
 
     parsed = {
         "qib": None,
