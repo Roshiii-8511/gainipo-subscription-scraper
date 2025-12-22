@@ -5,22 +5,27 @@ import os
 
 def is_market_time():
     """
-    Enforce market hours ONLY for GitHub Actions.
-    Manual runs are always allowed.
+    Rules:
+    1. FORCE_RUN=true  → always allow
+    2. Local run       → allow
+    3. GitHub Actions  → only 9–5 IST (Mon–Fri)
     """
 
-    # If not running in GitHub Actions → allow anytime
+    # 1️⃣ Explicit override (highest priority)
+    if os.getenv("FORCE_RUN", "").lower() == "true":
+        return True
+
+    # 2️⃣ Local run (not GitHub Actions)
     if not os.getenv("GITHUB_ACTIONS"):
         return True
 
+    # 3️⃣ GitHub Actions auto mode → enforce market hours
     ist = pytz.timezone("Asia/Kolkata")
     now = datetime.now(ist)
 
-    # Mon–Fri only
     if now.weekday() >= 5:
         return False
 
-    # 09:00–17:00 IST
     if now.hour < 9 or now.hour >= 17:
         return False
 
