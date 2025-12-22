@@ -1,76 +1,48 @@
-from playwright.sync_api import sync_playwright
+import requests
 import time
 
-NSE_LIST_URL = "https://www.nseindia.com/market-data/all-upcoming-issues-ipo"
-NSE_DETAIL_URL = "https://www.nseindia.com/market-data/issue-information"
-NSE_API_PART = "/api/issue-information-bid"
+API_URL = "https://www.nseindia.com/api/issue-information-bid"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+    "Accept": "application/json",
+    "Accept-Language": "en-IN,en;q=0.9",
+    "Referer": "https://www.nseindia.com/",
+    "Connection": "keep-alive",
+}
 
 
 def fetch_nse_subscription(symbol: str, series: str):
     """
-    NSE subscription fetcher
-    - GitHub Actions safe
-    - HTTP/2 disabled
-    - Retry enabled
+    GitHub-safe NSE scraper using mobile headers
+    (used by real production bots)
     """
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--disable-http2",
-                "--disable-quic",
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage"
-            ]
+    s = requests.Session()
+    s.headers.update(HEADERS)
+
+    # STEP 1: hit lightweight page to set cookies
+    s.get("https://www.nseindia.com", timeout=10)
+    time.sleep(0.5)
+
+    # STEP 2: call API directly
+    params = {
+        "symbol": symbol,
+        "series": series
+    }
+
+    # Mainboard only
+    if series == "EQ":
+        params["category"] = "CONSOLIDATED"
+
+    r = s.get(API_URL, params=params, timeout=10)
+
+    if r.status_code != 200 or "application/json" not in r.headers.get("content-type", ""):
+        raise RuntimeError(
+            f"NSE blocked request ({r.status_code}) → {r.text[:200]}"
         )
 
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 800},
-            ignore_https_errors=True
-        )
-
-        page = context.new_page()
-
-        def safe_goto(url):
-            for attempt in range(2):
-                try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                    return
-                except Exception:
-                    if attempt == 1:
-                        raise
-                    time.sleep(2)
-
-        # 1️⃣ NSE IPO list page
-        safe_goto(NSE_LIST_URL)
-        time.sleep(2)
-
-        # 2️⃣ NSE IPO detail page
-        safe_goto(
-            f"{NSE_DETAIL_URL}?symbol={symbol}&series={series}&type=Active"
-        )
-        time.sleep(2)
-
-        # 3️⃣ Capture API response
-        with page.expect_response(
-            lambda r: NSE_API_PART in r.url,
-            timeout=30000
-        ) as resp_info:
-            page.reload(wait_until="domcontentloaded")
-
-        response = resp_info.value
-        payload = response.json()
-
-        browser.close()
-
-    rows = payload.get("data", [])
+    data = r.json().get("data", [])
 
     parsed = {
         "qib": None,
@@ -79,16 +51,16 @@ def fetch_nse_subscription(symbol: str, series: str):
         "total": None
     }
 
-    for row in rows:
-        category = row.get("category", "").lower()
+    for row in data:
+        cat = row.get("category", "").lower()
 
-        if "qualified institutional" in category:
+        if "qualified institutional" in cat:
             parsed["qib"] = row.get("noOfTimes")
-        elif category.startswith("non institutional"):
+        elif cat.startswith("non institutional"):
             parsed["nii"] = row.get("noOfTimes")
-        elif "retail" in category:
+        elif "retail" in cat:
             parsed["rii"] = row.get("noOfTimes")
-        elif category == "total":
+        elif cat == "total":
             parsed["total"] = row.get("noOfTimes")
 
     return parsed
