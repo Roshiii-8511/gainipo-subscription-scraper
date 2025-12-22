@@ -6,24 +6,26 @@ from firestore_manager import FirestoreManager
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# src/main.py (Update this part)
+
 def main():
     db = FirestoreManager()
     nse = NSEScraper()
 
-    # 1. Fetch NSE Mainboard Data
     logger.info("Fetching NSE Mainboard subscription...")
     nse_data = nse.fetch_subscription()
 
     if nse_data:
-        # Note: NSE ke consolidated JSON me sabhi current IPOs ka data ho sakta hai
-        # Ya fir aapko URL me symbol pass karna padega agar NSE structure badle.
-        # Filhal hum ise 'current_ipo' slug me save kar rahe hain test ke liye.
-        
-        # TODO: Logic to identify 'ipo_slug' from the data
-        # Agar JSON me 'symbol' hai to usse slug banayein
-        
+        # NSE data ek list hai, usme har category ke liye company name ya symbol ho sakta hai
+        # Hum pehli category se naam nikal sakte hain (Example logic)
+        for item in nse_data:
+            # Maan lo hume 'ZOMATO' ka data mila
+            # Aapko yahan decide karna hai ki kis IPO ka data save karna hai
+            print(f"Found data for: {item['category']}") 
+
+        # Filhal testing ke liye:
         db.save_subscription_data(
-            ipo_slug="test-ipo-slug", # Isse dynamically update karna hoga
+            ipo_slug="ongoing-ipo-test", 
             exchange="NSE",
             board="MAINBOARD",
             data={"categories": nse_data}
