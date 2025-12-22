@@ -23,8 +23,6 @@ jobs:
 
       - run: pip install -r requirements.txt
       
-      - run: playwright install chromium
-      
       - run: python src/main.py
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
