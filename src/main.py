@@ -1,7 +1,6 @@
 from utils import is_market_time, slugify
 from firestore_manager import FirestoreManager
 from nse_subscription import fetch_nse_subscription
-import os
 
 
 def main():
