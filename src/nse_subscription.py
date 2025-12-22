@@ -1,61 +1,80 @@
 import requests
 import time
 
-BASE_URL = "https://www.nseindia.com"
+BASE = "https://www.nseindia.com"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    "Accept": "application/json",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.nseindia.com/",
-    "Connection": "keep-alive"
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Referer": "https://www.nseindia.com/market-data/all-upcoming-issues-ipo",
+    "DNT": "1",
 }
 
 
-def _get_nse_session():
+def _bootstrap_nse_session(symbol: str, series: str) -> requests.Session:
     """
-    NSE blocks direct API calls.
-    We must hit homepage first to set cookies.
+    Proper NSE browser-like navigation:
+    1. IPO list page
+    2. IPO detail page
     """
-    session = requests.Session()
-    session.headers.update(HEADERS)
+    s = requests.Session()
+    s.headers.update(HEADERS)
 
-    # Bootstrap cookies
-    session.get(BASE_URL, timeout=10)
+    # 1️⃣ Hit IPO list page
+    s.get(
+        f"{BASE}/market-data/all-upcoming-issues-ipo",
+        timeout=15
+    )
     time.sleep(1)
 
-    return session
+    # 2️⃣ Hit specific IPO detail page
+    s.get(
+        f"{BASE}/market-data/issue-information",
+        params={
+            "symbol": symbol,
+            "series": series,
+            "type": "Active"
+        },
+        timeout=15
+    )
+    time.sleep(1)
+
+    return s
 
 
 def fetch_nse_subscription(symbol: str, series: str):
     """
-    Fetch NSE IPO subscription
-    - EQ  → Consolidated
-    - SME → Default NSE bid details
+    NSE IPO subscription fetcher
+    - EQ  → Consolidated Bid Details
+    - SME → Default Bid Details
     """
 
-    session = _get_nse_session()
+    session = _bootstrap_nse_session(symbol, series)
 
-    url = f"{BASE_URL}/api/issue-information-bid"
+    api_url = f"{BASE}/api/issue-information-bid"
 
     params = {
         "symbol": symbol,
         "series": series
     }
 
-    # Mainboard needs consolidated flag
     if series == "EQ":
         params["category"] = "CONSOLIDATED"
 
-    resp = session.get(url, params=params, timeout=10)
+    resp = session.get(api_url, params=params, timeout=15)
 
-    if resp.status_code != 200:
+    # NSE bot response = HTML instead of JSON
+    if resp.status_code != 200 or "text/html" in resp.headers.get("Content-Type", ""):
         raise RuntimeError(
-            f"NSE API failed {resp.status_code} → {resp.text[:200]}"
+            f"NSE blocked request ({resp.status_code}). "
+            f"Likely bot protection. Response preview:\n{resp.text[:300]}"
         )
 
-    json_data = resp.json()
-    rows = json_data.get("data", [])
+    payload = resp.json()
+    rows = payload.get("data", [])
 
     parsed = {
         "qib": None,
@@ -65,15 +84,15 @@ def fetch_nse_subscription(symbol: str, series: str):
     }
 
     for row in rows:
-        category = row.get("category", "").lower()
+        cat = row.get("category", "").lower()
 
-        if "qualified institutional" in category:
+        if "qualified institutional" in cat:
             parsed["qib"] = row.get("noOfTimes")
-        elif category.startswith("non institutional"):
+        elif cat.startswith("non institutional"):
             parsed["nii"] = row.get("noOfTimes")
-        elif "retail" in category:
+        elif "retail" in cat:
             parsed["rii"] = row.get("noOfTimes")
-        elif category == "total":
+        elif cat == "total":
             parsed["total"] = row.get("noOfTimes")
 
     return parsed
