@@ -1,7 +1,6 @@
 from utils import is_market_time, slugify
 from firestore_manager import FirestoreManager
 from nse_subscription import fetch_nse_subscription
-from bse_subscription import fetch_bse_sme_subscription
 import os
 
 
@@ -14,9 +13,6 @@ def main():
 
     fs = FirestoreManager()
 
-    # -------------------------
-    # EXAMPLE: NSE MAINBOARD
-    # -------------------------
     data = fetch_nse_subscription("GKSL", "EQ")
 
     fs.save_subscription_data(
